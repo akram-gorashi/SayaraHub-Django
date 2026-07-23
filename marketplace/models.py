@@ -128,7 +128,10 @@ class Car(models.Model):
 
     class Meta:
         ordering = ["-listed_date", "-id"]
-        indexes = [models.Index(fields=["status", "city", "price"])]
+        indexes = [
+            models.Index(fields=["status", "city", "price"]),
+            models.Index(fields=["seller", "status", "-listed_date"], name="car_seller_status_idx"),
+        ]
 
 
 class CarImage(models.Model):
@@ -178,6 +181,7 @@ class Review(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+        indexes = [models.Index(fields=["seller", "status", "-created_at"], name="review_seller_status_idx")]
         constraints = [
             models.UniqueConstraint(fields=["reviewer", "seller"], name="unique_seller_review"),
             models.CheckConstraint(condition=~Q(reviewer=models.F("seller")), name="no_self_review"),
@@ -204,6 +208,10 @@ class Message(models.Model):
 
     class Meta:
         ordering = ["sent_at", "id"]
+        indexes = [
+            models.Index(fields=["chat", "-sent_at", "-id"], name="message_chat_latest_idx"),
+            models.Index(fields=["chat", "is_read", "sender"], name="message_unread_idx"),
+        ]
 
 
 class ContactMessage(models.Model):
@@ -216,6 +224,9 @@ class ContactMessage(models.Model):
     message = models.TextField(max_length=2000)
     created_at = models.DateTimeField(auto_now_add=True)
     is_read = models.BooleanField(default=False)
+
+    class Meta:
+        indexes = [models.Index(fields=["seller", "is_read", "-created_at"], name="contact_inbox_idx")]
 
 
 class VehicleHistory(models.Model):
@@ -251,6 +262,9 @@ class Report(models.Model):
     resolved_by = models.ForeignKey(User, related_name="+", blank=True, null=True, on_delete=models.SET_NULL)
     resolution_note = models.TextField(blank=True, null=True)
 
+    class Meta:
+        indexes = [models.Index(fields=["status", "-created_at"], name="report_status_idx")]
+
 
 class Notification(models.Model):
     user = models.ForeignKey(User, related_name="notifications", on_delete=models.CASCADE)
@@ -263,6 +277,9 @@ class Notification(models.Model):
     is_read = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     read_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["user", "is_read", "-created_at"], name="notification_inbox_idx")]
 
 
 class NotificationPreference(models.Model):
@@ -290,6 +307,9 @@ class SavedSearch(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    class Meta:
+        indexes = [models.Index(fields=["is_enabled", "brand", "model"], name="saved_search_match_idx")]
+
 
 class CarListingDraft(models.Model):
     user = models.OneToOneField(User, related_name="listing_draft", on_delete=models.CASCADE)
@@ -305,6 +325,9 @@ class ModerationHistory(models.Model):
     new_status = models.CharField(max_length=20)
     reason = models.TextField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["car", "-created_at"], name="moderation_history_idx")]
 
 
 class AuditLog(models.Model):
@@ -334,3 +357,11 @@ class RealtimeOutboxEvent(models.Model):
     dead_lettered_at = models.DateTimeField(blank=True, null=True, db_index=True)
     attempts = models.PositiveSmallIntegerField(default=0)
     last_error = models.TextField(blank=True, null=True)
+
+    class Meta:
+        indexes = [
+            models.Index(
+                fields=["processed_at", "dead_lettered_at", "created_at"],
+                name="outbox_dispatch_idx",
+            ),
+        ]

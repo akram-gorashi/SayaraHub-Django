@@ -32,6 +32,8 @@ This matrix compares the ASP.NET controllers and production behaviors with the D
 | Hangfire jobs | Functional equivalent | Celery worker and Beat |
 | Health/readiness | Equivalent | Database and Redis readiness checks |
 | Metrics/correlation/security headers | Equivalent baseline | Prometheus endpoint and request middleware |
+| Runtime-data cleanup | Equivalent | Celery Beat removes expired token rows and completed outbox history |
+| Uploaded-file cleanup | Improved | Transaction-aware cleanup removes replaced/deleted media files |
 | Swagger | Equivalent | drf-spectacular with feature tags and concrete request bodies |
 
 ## Intentional implementation differences

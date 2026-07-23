@@ -8,6 +8,7 @@ from io import BytesIO
 from django.utils import timezone
 from datetime import timedelta
 from django.conf import settings
+from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
 import socket
 import struct
 
@@ -90,3 +91,13 @@ def cleanup_stale_presence():
     return models.UserRealtimePresence.objects.filter(
         connection_count__gt=0, updated_at__lt=cutoff
     ).update(connection_count=0, last_seen_at=timezone.now())
+
+
+@shared_task(name="marketplace.cleanup_expired_runtime_data")
+def cleanup_expired_runtime_data():
+    now = timezone.now()
+    expired_tokens, _ = OutstandingToken.objects.filter(expires_at__lt=now).delete()
+    old_outbox, _ = models.RealtimeOutboxEvent.objects.filter(
+        processed_at__lt=now - timedelta(days=7)
+    ).delete()
+    return {"expiredTokens": expired_tokens, "processedOutboxEvents": old_outbox}

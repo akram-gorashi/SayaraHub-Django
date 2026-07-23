@@ -34,7 +34,7 @@ class LoginSerializer(serializers.Serializer):
     password = serializers.CharField(write_only=True)
 
     def validate(self, attrs):
-        user = authenticate(email=attrs["email"], password=attrs["password"])
+        user = authenticate(email=attrs["email"].lower(), password=attrs["password"])
         if not user or user.is_deleted:
             raise serializers.ValidationError("Invalid email or password.")
         attrs["user"] = user
@@ -66,10 +66,10 @@ class UserProfileSerializer(serializers.ModelSerializer):
         fields = ("id", "fullName", "email", "phoneNumber", "imageUrl", "roles")
         read_only_fields = ("id", "email", "imageUrl", "roles")
 
-    def get_imageUrl(self, obj):
+    def get_imageUrl(self, obj) -> str | None:
         return url_for(self.context.get("request"), obj.image)
 
-    def get_roles(self, obj):
+    def get_roles(self, obj) -> list[str]:
         return ["Admin"] if obj.is_staff else ["User"]
 
 
@@ -84,10 +84,10 @@ class PublicUserSerializer(serializers.ModelSerializer):
         model = models.User
         fields = ("id", "fullName", "phoneNumber", "imageUrl", "isVerified", "isPhoneVerified")
 
-    def get_phoneNumber(self, obj):
+    def get_phoneNumber(self, obj) -> str | None:
         return None if obj.hide_phone_number else obj.phone_number
 
-    def get_imageUrl(self, obj):
+    def get_imageUrl(self, obj) -> str | None:
         return url_for(self.context.get("request"), obj.image)
 
 
@@ -123,7 +123,7 @@ class CarSummarySerializer(serializers.ModelSerializer):
             "transmission", "fuelType", "city", "listedDate", "mainImageUrl", "moderationReason",
         )
 
-    def get_mainImageUrl(self, obj):
+    def get_mainImageUrl(self, obj) -> str | None:
         image = next((item for item in obj.images.all() if item.is_main), None)
         image = image or next(iter(obj.images.all()), None)
         return url_for(self.context.get("request"), image.image) if image else None
@@ -180,7 +180,9 @@ class CarWriteSerializer(serializers.ModelSerializer):
         )
 
     def validate(self, attrs):
-        if attrs["model"].brand_id != attrs["brand"].id:
+        brand = attrs.get("brand") or getattr(self.instance, "brand", None)
+        car_model = attrs.get("model") or getattr(self.instance, "model", None)
+        if brand and car_model and car_model.brand_id != brand.id:
             raise serializers.ValidationError({"carModelId": "The model does not belong to the selected brand."})
         return attrs
 
@@ -197,7 +199,7 @@ class ReviewSerializer(serializers.ModelSerializer):
         model = models.Review
         fields = ("id", "rating", "comment", "createdAt", "reviewerId", "reviewerName", "reviewerImageUrl", "sellerId", "status", "moderationReason")
 
-    def get_reviewerImageUrl(self, obj):
+    def get_reviewerImageUrl(self, obj) -> str | None:
         return url_for(self.context.get("request"), obj.reviewer.image)
 
 
@@ -237,24 +239,30 @@ class ChatSerializer(serializers.ModelSerializer):
         except models.UserRealtimePresence.DoesNotExist:
             return None
 
-    def get_otherUserId(self, obj): return self.other(obj).id
-    def get_otherUserName(self, obj): return self.other(obj).full_name
-    def get_otherUserImageUrl(self, obj): return url_for(self.context.get("request"), self.other(obj).image)
-    def get_otherUserIsVerified(self, obj): return self.other(obj).is_verified
-    def get_otherUserIsPhoneVerified(self, obj): return self.other(obj).is_phone_verified
-    def get_otherUserIsOnline(self, obj):
+    def get_otherUserId(self, obj) -> int: return self.other(obj).id
+    def get_otherUserName(self, obj) -> str: return self.other(obj).full_name
+    def get_otherUserImageUrl(self, obj) -> str | None: return url_for(self.context.get("request"), self.other(obj).image)
+    def get_otherUserIsVerified(self, obj) -> bool: return self.other(obj).is_verified
+    def get_otherUserIsPhoneVerified(self, obj) -> bool: return self.other(obj).is_phone_verified
+    def get_otherUserIsOnline(self, obj) -> bool:
         presence = self.other_presence(obj)
         return bool(presence and presence.connection_count > 0)
-    def get_otherUserLastSeenAt(self, obj):
+    def get_otherUserLastSeenAt(self, obj) -> datetime | None:
         presence = self.other_presence(obj)
         return presence.last_seen_at if presence else None
-    def get_lastMessage(self, obj):
+    def get_lastMessage(self, obj) -> str | None:
+        if hasattr(obj, "last_message_content"):
+            return obj.last_message_content
         last = obj.messages.last()
         return last.content if last else None
-    def get_lastMessageAt(self, obj):
+    def get_lastMessageAt(self, obj) -> datetime | None:
+        if hasattr(obj, "last_message_at"):
+            return obj.last_message_at
         last = obj.messages.last()
         return last.sent_at if last else None
-    def get_unreadCount(self, obj):
+    def get_unreadCount(self, obj) -> int:
+        if hasattr(obj, "unread_count"):
+            return obj.unread_count
         return obj.messages.filter(is_read=False).exclude(sender=self.context["request"].user).count()
 
 
@@ -292,7 +300,7 @@ class VehicleHistorySerializer(serializers.ModelSerializer):
         model = models.VehicleHistory
         fields = ("id", "carId", "description", "serviceDate", "mileage", "provider", "cost", "recordType", "documentUrl", "document")
 
-    def get_documentUrl(self, obj):
+    def get_documentUrl(self, obj) -> str | None:
         if obj.document:
             return url_for(self.context.get("request"), obj.document)
         return obj.document_url
@@ -350,11 +358,11 @@ class SellerCarImageSerializer(serializers.ModelSerializer):
         model = models.CarImage
         fields = ("id", "imageUrl", "thumbnailUrl", "isMain", "displayOrder", "processingStatus", "processingError", "processingAttempts")
 
-    def get_imageUrl(self, obj): return url_for(self.context.get("request"), obj.image)
-    def get_thumbnailUrl(self, obj): return url_for(self.context.get("request"), obj.thumbnail)
-    def get_processingStatus(self, obj): return obj.processing_status
-    def get_processingError(self, obj): return obj.processing_error
-    def get_processingAttempts(self, obj): return obj.processing_attempts
+    def get_imageUrl(self, obj) -> str | None: return url_for(self.context.get("request"), obj.image)
+    def get_thumbnailUrl(self, obj) -> str | None: return url_for(self.context.get("request"), obj.thumbnail)
+    def get_processingStatus(self, obj) -> str: return obj.processing_status
+    def get_processingError(self, obj) -> str | None: return obj.processing_error
+    def get_processingAttempts(self, obj) -> int: return obj.processing_attempts
 
 
 class ModerationHistorySerializer(serializers.ModelSerializer):
@@ -387,7 +395,7 @@ class ModerationCarSerializer(serializers.ModelSerializer):
                   "listedDate", "moderationReason", "moderatedAt", "moderatedByUserId",
                   "description", "city", "vin", "year", "mileage", "images")
 
-    def get_images(self, obj):
+    def get_images(self, obj) -> list[str]:
         return [url_for(self.context.get("request"), image.image) for image in obj.images.all()]
 
 

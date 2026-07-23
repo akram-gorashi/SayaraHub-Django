@@ -158,3 +158,23 @@ WebSocket event examples:
 ```
 
 The complete controller and production-behavior comparison is in [docs/PARITY.md](docs/PARITY.md).
+
+## Performance and maintenance safeguards
+
+- Chat lists annotate the latest message and unread count in SQL, so database-query count does
+  not grow with the number of conversations.
+- Listing summaries prefetch only the images they serialize; feature and history rows are loaded
+  only for detail responses.
+- Seller and moderation statistics use conditional aggregates, including real pending/failed
+  image-processing counts.
+- PostgreSQL composite indexes cover listing dashboards, chat catch-up/unread reads, notification
+  and contact inboxes, moderation history, reports, saved-search matching, and outbox dispatch.
+- PostgreSQL connections are reused for 60 seconds and health-checked before reuse.
+- Authentication, anonymous contact, and upload endpoints have additional scoped throttles.
+- Celery uses late acknowledgements, worker-loss rejection, and a prefetch multiplier of one for
+  safer long-running image jobs.
+- A daily Beat task removes expired JWT session rows and successfully processed outbox events
+  older than seven days; dead letters are retained for administrators.
+- WhiteNoise serves hashed, gzip/Brotli-compressed static assets from the container.
+- `django-cleanup` removes replaced/deleted profile images, car images, thumbnails, and vehicle
+  documents after the surrounding database transaction commits.

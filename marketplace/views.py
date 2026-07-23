@@ -5,7 +5,7 @@ from django.core.cache import cache
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import connection
 from django.db import transaction
-from django.db.models import Avg, Count, F, Q, Sum
+from django.db.models import Avg, Count, DateTimeField, F, OuterRef, Q, Subquery, Sum
 from django.http import JsonResponse
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
@@ -101,6 +101,7 @@ def validate_image_upload(file, max_bytes=10 * 1024 * 1024):
 class AuthRegisterView(APIView):
     permission_classes = [permissions.AllowAny]
     serializer_class = serializers.RegisterSerializer
+    throttle_scope = "auth"
 
     def post(self, request):
         serializer = serializers.RegisterSerializer(data=request.data)
@@ -114,6 +115,7 @@ class AuthRegisterView(APIView):
 class AuthLoginView(APIView):
     permission_classes = [permissions.AllowAny]
     serializer_class = serializers.LoginSerializer
+    throttle_scope = "auth"
 
     def post(self, request):
         serializer = serializers.LoginSerializer(data=request.data)
@@ -126,6 +128,7 @@ class AuthLoginView(APIView):
 class AuthRefreshView(APIView):
     permission_classes = [permissions.AllowAny]
     serializer_class = serializers.RefreshTokenRequestSerializer
+    throttle_scope = "auth"
 
     def post(self, request):
         token = request.data.get("refreshToken") or request.COOKIES.get("refreshToken")
@@ -329,10 +332,13 @@ class BrandModelsView(APIView):
         return ok(page(request, models.CarModel.objects.filter(brand_id=brand_id), serializers.CarModelMasterSerializer))
 
 
-def car_queryset():
-    return models.Car.objects.select_related(
+def car_queryset(include_details=False):
+    query = models.Car.objects.select_related(
         "brand", "model", "body_type", "condition", "transmission", "fuel_type", "seller"
-    ).prefetch_related("images", "features", "vehicle_histories")
+    ).prefetch_related("images")
+    if include_details:
+        query = query.prefetch_related("features", "vehicle_histories")
+    return query
 
 
 def normalized_car_data(request):
@@ -400,7 +406,7 @@ class CarDetailView(APIView):
         return [permissions.AllowAny()] if self.request.method == "GET" else [permissions.IsAuthenticated()]
 
     def get(self, request, car_id):
-        car = get_object_or_404(car_queryset(), id=car_id)
+        car = get_object_or_404(car_queryset(include_details=True), id=car_id)
         if car.status != models.Car.Status.AVAILABLE and (not request.user.is_authenticated or (request.user.id != car.seller_id and not request.user.is_staff)):
             return fail("Car not found.", status=404)
         visitor_key = f"user:{request.user.id}" if request.user.is_authenticated else request.COOKIES.get("sayarahub.visitor")
@@ -547,10 +553,18 @@ class ReviewDetailView(APIView):
 class ChatsView(APIView):
     serializer_class = serializers.ChatSerializer
     def get(self, request):
+        latest_message = models.Message.objects.filter(chat_id=OuterRef("pk")).order_by("-sent_at", "-id")
         query = models.Chat.objects.select_related(
             "car", "buyer", "seller", "buyer__realtime_presence", "seller__realtime_presence"
-        ).prefetch_related("messages").filter(
+        ).filter(
             Q(buyer=request.user) | Q(seller=request.user)
+        ).annotate(
+            last_message_content=Subquery(latest_message.values("content")[:1]),
+            last_message_at=Subquery(latest_message.values("sent_at")[:1], output_field=DateTimeField()),
+            unread_count=Count(
+                "messages",
+                filter=Q(messages__is_read=False) & ~Q(messages__sender=request.user),
+            ),
         ).order_by("-updated_at")
         return ok(page(request, query, serializers.ChatSerializer))
 
@@ -642,6 +656,7 @@ class VehicleHistoryDetailView(APIView):
 class ContactCreateView(APIView):
     permission_classes = [permissions.AllowAny]
     serializer_class = serializers.ContactMessageSerializer
+    throttle_scope = "contact"
 
     def post(self, request, car_id):
         car = get_object_or_404(models.Car, id=car_id, status=models.Car.Status.AVAILABLE)
@@ -839,19 +854,31 @@ class ReportsView(APIView):
 class SellerDashboardView(APIView):
     def get(self, request):
         cars = models.Car.objects.filter(seller=request.user)
-        aggregate = cars.aggregate(totalViews=Sum("views"), favoritesReceived=Count("favorites"))
+        aggregate = cars.aggregate(
+            totalListings=Count("id", distinct=True),
+            activeListings=Count("id", filter=Q(status=models.Car.Status.AVAILABLE), distinct=True),
+            soldListings=Count("id", filter=Q(status=models.Car.Status.SOLD), distinct=True),
+            reservedListings=Count("id", filter=Q(status=models.Car.Status.RESERVED), distinct=True),
+            inactiveListings=Count("id", filter=Q(status=models.Car.Status.INACTIVE), distinct=True),
+            totalViews=Sum("views"),
+        )
+        favorites_received = models.Favorite.objects.filter(car__seller=request.user).count()
         average = models.Review.objects.filter(seller=request.user, status=models.Review.Status.APPROVED).aggregate(value=Avg("rating"))["value"]
+        image_counts = models.CarImage.objects.filter(car__seller=request.user).aggregate(
+            pending=Count("id", filter=Q(processing_status__in=("Pending", "Processing"))),
+            failed=Count("id", filter=Q(processing_status="Failed")),
+        )
         data = {
-            "totalListings": cars.count(),
-            "activeListings": cars.filter(status=models.Car.Status.AVAILABLE).count(),
-            "soldListings": cars.filter(status=models.Car.Status.SOLD).count(),
-            "reservedListings": cars.filter(status=models.Car.Status.RESERVED).count(),
-            "inactiveListings": cars.filter(status=models.Car.Status.INACTIVE).count(),
+            "totalListings": aggregate["totalListings"],
+            "activeListings": aggregate["activeListings"],
+            "soldListings": aggregate["soldListings"],
+            "reservedListings": aggregate["reservedListings"],
+            "inactiveListings": aggregate["inactiveListings"],
             "totalViews": aggregate["totalViews"] or 0,
-            "favoritesReceived": aggregate["favoritesReceived"] or 0,
+            "favoritesReceived": favorites_received,
             "averageRating": round(average or 0, 2),
-            "pendingImageCount": 0,
-            "failedImageCount": 0,
+            "pendingImageCount": image_counts["pending"],
+            "failedImageCount": image_counts["failed"],
         }
         return ok(data)
 
@@ -893,6 +920,7 @@ class SellerCarImageRetryView(APIView):
 class CarUploadView(APIView):
     parser_classes = [MultiPartParser]
     serializer_class = serializers.ProfileImageRequestSerializer
+    throttle_scope = "uploads"
 
     def post(self, request):
         file = request.FILES.get("File") or request.FILES.get("file")
@@ -998,11 +1026,11 @@ class AdminStatisticsView(APIView):
     permission_classes = [IsAdmin]
 
     def get(self, request):
-        return ok({
-            "pending": models.Car.objects.filter(status=models.Car.Status.PENDING).count(),
-            "approved": models.Car.objects.filter(status=models.Car.Status.AVAILABLE).count(),
-            "rejected": models.Car.objects.filter(status=models.Car.Status.REJECTED).count(),
-        })
+        return ok(models.Car.objects.aggregate(
+            pending=Count("id", filter=Q(status=models.Car.Status.PENDING)),
+            approved=Count("id", filter=Q(status=models.Car.Status.AVAILABLE)),
+            rejected=Count("id", filter=Q(status=models.Car.Status.REJECTED)),
+        ))
 
 
 class AdminReportsView(APIView):
