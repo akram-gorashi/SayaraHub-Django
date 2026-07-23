@@ -1,0 +1,31 @@
+from django.urls import path
+from . import views
+
+urlpatterns = [
+    path("Auth/register", views.AuthRegisterView.as_view()),
+    path("Auth/login", views.AuthLoginView.as_view()),
+    path("Auth/refresh", views.AuthRefreshView.as_view()),
+    path("Auth/revoke", views.AuthRevokeView.as_view()),
+    path("Auth/revoke-all", views.AuthRevokeAllView.as_view()),
+    path("Auth/sessions", views.AuthSessionsView.as_view()),
+    path("Auth/sessions/revoke-others", views.AuthRevokeOtherSessionsView.as_view()),
+    path("Auth/sessions/<int:session_id>", views.AuthSessionsView.as_view()),
+    path("Auth/websocket-ticket", views.WebSocketTicketView.as_view()),
+    path("auth/register", views.AuthRegisterView.as_view()),
+    path("auth/login", views.AuthLoginView.as_view()),
+    path("auth/refresh", views.AuthRefreshView.as_view()),
+    path("auth/revoke", views.AuthRevokeView.as_view()),
+    path("auth/revoke-all", views.AuthRevokeAllView.as_view()),
+    path("auth/sessions", views.AuthSessionsView.as_view()),
+    path("auth/sessions/revoke-others", views.AuthRevokeOtherSessionsView.as_view()),
+    path("auth/sessions/<int:session_id>", views.AuthSessionsView.as_view()),
+    path("auth/websocket-ticket", views.WebSocketTicketView.as_view()),
+    path("users/me", views.UserMeView.as_view()),
+    path("users/me/password", views.ChangePasswordView.as_view()),
+    path("users/me/image", views.UserImageView.as_view()),
+    path("users/me/blocked", views.BlockedUsersView.as_view()),
+    path("users/<int:user_id>/block", views.BlockUserView.as_view()),
+    path("users/<int:user_id>", views.PublicUserView.as_view()),
+    path("settings", views.SettingsView.as_view()),
+    path("settings/account", views.CloseAccountView.as_view()),
+]
