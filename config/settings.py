@@ -10,7 +10,10 @@ def env(name: str, default: str = "") -> str:
     return os.getenv(name, default)
 
 
-SECRET_KEY = env("DJANGO_SECRET_KEY", "development-only-secret-key-change-before-production")
+SECRET_KEY = env(
+    "DJANGO_SECRET_KEY",
+    "development-only-change-this-64-character-signing-key-before-production",
+)
 DEBUG = env("DJANGO_DEBUG", "true").lower() == "true"
 ALLOWED_HOSTS = [v.strip() for v in env("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1,testserver").split(",") if v.strip()]
 
@@ -34,11 +37,13 @@ MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
+    "django.middleware.locale.LocaleMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    "marketplace.middleware.RequestMetricsMiddleware",
 ]
 
 ROOT_URLCONF = "config.urls"
@@ -110,7 +115,7 @@ SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=15),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
     "ROTATE_REFRESH_TOKENS": True,
-    "BLACKLIST_AFTER_ROTATION": False,
+    "BLACKLIST_AFTER_ROTATION": True,
     "USER_ID_CLAIM": "sub",
 }
 SPECTACULAR_SETTINGS = {
@@ -138,7 +143,11 @@ CELERY_BEAT_SCHEDULE = {
     "dispatch-realtime-outbox": {
         "task": "marketplace.dispatch_realtime_outbox",
         "schedule": 5.0,
-    }
+    },
+    "cleanup-stale-presence": {
+        "task": "marketplace.cleanup_stale_presence",
+        "schedule": 60.0,
+    },
 }
 CACHES = {
     "default": {
@@ -146,7 +155,11 @@ CACHES = {
         "LOCATION": REDIS_URL,
     }
 }
+if env("DATABASE_ENGINE") == "sqlite":
+    CACHES = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
+    CHANNEL_LAYERS = {"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
 WEBSOCKET_TICKET_TTL_SECONDS = 30
+METRICS_KEY = env("METRICS_KEY", "development-metrics-key")
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 EMAIL_HOST = env("SMTP_HOST", "localhost")
 EMAIL_PORT = int(env("SMTP_PORT", "25"))
@@ -155,3 +168,6 @@ EMAIL_USE_SSL = env("SMTP_USE_SSL", "false").lower() == "true"
 EMAIL_HOST_USER = env("SMTP_USERNAME")
 EMAIL_HOST_PASSWORD = env("SMTP_PASSWORD")
 DEFAULT_FROM_EMAIL = env("SMTP_FROM_ADDRESS", "noreply@sayarahub.local")
+CLAMAV_HOST = env("CLAMAV_HOST")
+CLAMAV_PORT = int(env("CLAMAV_PORT", "3310"))
+CLAMAV_REQUIRED = env("CLAMAV_REQUIRED", "false").lower() == "true"

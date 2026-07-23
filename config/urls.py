@@ -3,7 +3,7 @@ from django.conf.urls.static import static
 from django.contrib import admin
 from django.urls import include, path
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
-from marketplace.views import health, health_ready
+from marketplace.views import health, health_ready, metrics
 
 
 urlpatterns = [
@@ -14,4 +14,5 @@ urlpatterns = [
     path("health/", health),
     path("health/live", health),
     path("health/ready", health_ready),
+    path("metrics", metrics),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

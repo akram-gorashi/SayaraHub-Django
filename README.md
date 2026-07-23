@@ -6,10 +6,22 @@ Django, Django REST Framework, SimpleJWT, and PostgreSQL. It preserves the Angul
 
 ## Run with PostgreSQL
 
+PowerShell:
+
 ```powershell
-cd SayaraHub-Django
+cd C:\Projects\SayaraHub_Full_stack\SayaraHub-Django
 Copy-Item .env.example .env
-docker compose up --build
+docker compose up -d --build
+docker compose ps
+```
+
+Git Bash:
+
+```bash
+cd /c/Projects/SayaraHub_Full_stack/SayaraHub-Django
+cp .env.example .env
+docker compose up -d --build
+docker compose ps
 ```
 
 - API: `http://localhost:8000/api/v1`
@@ -83,21 +95,23 @@ promoted into separate Django apps with their own migrations.
 ## Practice exercises
 
 - Replace the APIView classes with DRF ViewSets and routers.
-- Add refresh-token blacklisting and session/device management.
-- Add Channels + Redis for live chat and notifications.
-- Move notifications to a Celery outbox task.
-- Add S3-compatible image storage and thumbnail processing.
+- Add richer browser/IP labels to the existing refresh-token session management.
+- Replace local media volumes with S3-compatible object storage.
+- Add Grafana dashboards for the exposed Prometheus metrics.
+- Add browser end-to-end tests for reconnect and offline catch-up.
 - Write tests for ownership, blocked users, filters, invalid transitions, and concurrent favorites.
 
 ## Compatibility scope
 
 Implemented: authentication, profiles, settings, master data, car CRUD/filtering, favorites,
 seller cars/statistics, moderation, reviews, chats, contact inbox, vehicle history, blocking,
-reports, notifications, saved searches, file uploads, Swagger, health checks, and demo data.
+reports, notifications, saved searches, file uploads, Swagger, health checks, demo data,
+Channels/Redis realtime, Celery/Beat delivery, a transactional outbox, dead letters,
+ClamAV scanning, WebP thumbnails, Prometheus metrics, audit export, and token sessions.
 
 The .NET-specific SignalR protocol is replaced by Channels WebSockets. Hangfire image
-processing, Redis device-session metadata, Prometheus/Grafana, dead-letter administration,
-and audit CSV export remain optional practice extensions.
+processing is replaced by Celery. Local-volume media storage and generic token-session labels
+are the two deliberate practice-project simplifications; see the parity matrix below.
 
 ## Realtime implementation: step by step
 
@@ -105,8 +119,9 @@ The original SignalR files remain untouched. Django uses a parallel native-WebSo
 
 1. **ASGI and Channels** — `config/asgi.py` routes HTTP to Django and `/ws/...` connections
    to Channels consumers.
-2. **JWT authentication** — `marketplace/realtime/middleware.py` validates the access token
-   supplied as `?token=...`. Invalid sockets close with code `4401` or `4403`.
+2. **JWT authentication** — Angular first requests a single-use, 30-second WebSocket ticket
+   from `POST /api/v1/Auth/websocket-ticket`, then connects with `?ticket=...`. The ticket is
+   atomically consumed from Redis. Direct `?token=...` fallback is development-only.
 3. **Redis groups** — each user joins `user_<id>` and each conversation joins `chat_<id>`.
    Redis allows API and worker processes on different containers to publish to the same group.
 4. **Live notifications** — `/ws/notifications/` publishes newly committed notification rows.
@@ -126,10 +141,11 @@ Angular alternatives are intentionally separate:
 
 - `django-chat-realtime.service.ts`
 - `django-notification-realtime.service.ts`
-- Existing `chat-realtime.service.ts` and `notification-center.service.ts` continue using SignalR.
+- `django-notification-center.service.ts`
 
-To experiment with Django realtime, inject the `Django...` service in a practice component/store.
-This explicit opt-in prevents the Django exercise from changing the production SignalR behavior.
+The Django practice UI is wired to the new Django services. The original SignalR source files
+remain unchanged for side-by-side interview comparison. `npm start` and `npm run start:django` use
+`proxy.django.conf.json`; `proxy.dotnet.conf.json` is retained as the original API proxy reference.
 
 WebSocket event examples:
 
@@ -140,3 +156,5 @@ WebSocket event examples:
 {"type":"messages.read","chatId":3,"readerId":7,"markedReadCount":2}
 {"type":"notification.received","notification":{"id":9,"type":"ChatMessage"}}
 ```
+
+The complete controller and production-behavior comparison is in [docs/PARITY.md](docs/PARITY.md).

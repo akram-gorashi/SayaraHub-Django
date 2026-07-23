@@ -43,6 +43,11 @@ def change_presence(user_id, delta):
     return presence.connection_count > 0, presence.last_seen_at, presence.connection_count
 
 
+@database_sync_to_async
+def touch_presence(user_id):
+    models.UserRealtimePresence.objects.filter(user_id=user_id).update(updated_at=timezone.now())
+
+
 class NotificationConsumer(AsyncJsonWebsocketConsumer):
     async def connect(self):
         if not self.scope["user"].is_authenticated:
@@ -79,6 +84,7 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         self.presence_registered = True
         self.group_name = f"chat_{self.chat_id}"
         self.typing_task = None
+        self.presence_heartbeat_task = asyncio.create_task(self.presence_heartbeat())
         self.last_client_event_at = 0.0
         await self.channel_layer.group_add(self.group_name, self.channel_name)
         await self.accept()
@@ -95,6 +101,8 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         if hasattr(self, "group_name"):
             if self.typing_task:
                 self.typing_task.cancel()
+            if self.presence_heartbeat_task:
+                self.presence_heartbeat_task.cancel()
             await self.channel_layer.group_discard(self.group_name, self.channel_name)
             user = self.scope["user"]
             online, last_seen, _ = await change_presence(user.id, -1)
@@ -107,12 +115,12 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         if len(json.dumps(content)) > 4096:
             await self.close(code=4409)
             return
-        now = time.monotonic()
-        if now - self.last_client_event_at < 0.05:
-            return
-        self.last_client_event_at = now
         event_type = content.get("type")
         if event_type == "typing":
+            now = time.monotonic()
+            if now - self.last_client_event_at < 0.05:
+                return
+            self.last_client_event_at = now
             if self.typing_task:
                 self.typing_task.cancel()
                 self.typing_task = None
@@ -148,5 +156,13 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
                     "userId": self.scope["user"].id, "isTyping": False,
                 },
             })
+        except asyncio.CancelledError:
+            pass
+
+    async def presence_heartbeat(self):
+        try:
+            while True:
+                await asyncio.sleep(30)
+                await touch_presence(self.scope["user"].id)
         except asyncio.CancelledError:
             pass

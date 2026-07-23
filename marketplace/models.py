@@ -227,6 +227,7 @@ class VehicleHistory(models.Model):
     cost = models.DecimalField(max_digits=12, decimal_places=2, blank=True, null=True)
     record_type = models.CharField(max_length=40, default="Service")
     document_url = models.URLField(blank=True, null=True)
+    document = models.FileField(upload_to="vehicle-history/", blank=True, null=True)
 
 
 class UserBlock(models.Model):
@@ -320,6 +321,7 @@ class UserRealtimePresence(models.Model):
     user = models.OneToOneField(User, related_name="realtime_presence", on_delete=models.CASCADE)
     connection_count = models.PositiveIntegerField(default=0)
     last_seen_at = models.DateTimeField(blank=True, null=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
 
 class RealtimeOutboxEvent(models.Model):

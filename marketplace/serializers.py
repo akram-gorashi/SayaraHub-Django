@@ -231,13 +231,23 @@ class ChatSerializer(serializers.ModelSerializer):
         user = self.context["request"].user
         return obj.seller if user.id == obj.buyer_id else obj.buyer
 
+    def other_presence(self, obj):
+        try:
+            return self.other(obj).realtime_presence
+        except models.UserRealtimePresence.DoesNotExist:
+            return None
+
     def get_otherUserId(self, obj): return self.other(obj).id
     def get_otherUserName(self, obj): return self.other(obj).full_name
     def get_otherUserImageUrl(self, obj): return url_for(self.context.get("request"), self.other(obj).image)
     def get_otherUserIsVerified(self, obj): return self.other(obj).is_verified
     def get_otherUserIsPhoneVerified(self, obj): return self.other(obj).is_phone_verified
-    def get_otherUserIsOnline(self, obj): return False
-    def get_otherUserLastSeenAt(self, obj): return None
+    def get_otherUserIsOnline(self, obj):
+        presence = self.other_presence(obj)
+        return bool(presence and presence.connection_count > 0)
+    def get_otherUserLastSeenAt(self, obj):
+        presence = self.other_presence(obj)
+        return presence.last_seen_at if presence else None
     def get_lastMessage(self, obj):
         last = obj.messages.last()
         return last.content if last else None
@@ -274,12 +284,18 @@ class ContactMessageSerializer(serializers.ModelSerializer):
 class VehicleHistorySerializer(serializers.ModelSerializer):
     serviceDate = serializers.DateField(source="service_date", required=False, allow_null=True)
     recordType = serializers.CharField(source="record_type", required=False)
-    documentUrl = serializers.URLField(source="document_url", required=False, allow_null=True, allow_blank=True)
+    documentUrl = serializers.SerializerMethodField()
+    document = serializers.FileField(write_only=True, required=False, allow_null=True)
     carId = serializers.IntegerField(source="car_id", read_only=True)
 
     class Meta:
         model = models.VehicleHistory
-        fields = ("id", "carId", "description", "serviceDate", "mileage", "provider", "cost", "recordType", "documentUrl")
+        fields = ("id", "carId", "description", "serviceDate", "mileage", "provider", "cost", "recordType", "documentUrl", "document")
+
+    def get_documentUrl(self, obj):
+        if obj.document:
+            return url_for(self.context.get("request"), obj.document)
+        return obj.document_url
 
 
 class ReportSerializer(serializers.ModelSerializer):

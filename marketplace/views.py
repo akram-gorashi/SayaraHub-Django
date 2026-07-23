@@ -1,6 +1,8 @@
 from django.contrib.auth import update_session_auth_hash
+from django.contrib.auth import password_validation
 from django.conf import settings
 from django.core.cache import cache
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import connection
 from django.db import transaction
 from django.db.models import Avg, Count, F, Q, Sum
@@ -11,10 +13,13 @@ from django.utils import timezone
 import csv
 import secrets
 from datetime import timedelta
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from PIL import Image, UnidentifiedImageError
 from rest_framework import permissions, serializers as drf_serializers, status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.views import APIView as DRFAPIView
+from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
@@ -54,6 +59,12 @@ def health_ready(request):
     return JsonResponse({"status": "Healthy" if healthy else "Unhealthy", "checks": checks}, status=200 if healthy else 503)
 
 
+def metrics(request):
+    if request.headers.get("X-Metrics-Key") != settings.METRICS_KEY:
+        return HttpResponse(status=403)
+    return HttpResponse(generate_latest(), content_type=CONTENT_TYPE_LATEST)
+
+
 def participant_or_404(user, chat_id):
     return get_object_or_404(
         models.Chat.objects.select_related("car", "buyer", "seller"),
@@ -75,6 +86,16 @@ def write_audit(request, action, entity_type, entity_id=None, details=None):
         entity_id=str(entity_id) if entity_id is not None else None,
         details=details, ip_address=ip,
     )
+
+
+def validate_image_upload(file, max_bytes=10 * 1024 * 1024):
+    if file.size > max_bytes:
+        raise DRFValidationError(f"Image must not exceed {max_bytes // (1024 * 1024)} MB.")
+    try:
+        Image.open(file).verify()
+        file.seek(0)
+    except (UnidentifiedImageError, OSError):
+        raise DRFValidationError("The uploaded file is not a valid image.")
 
 
 class AuthRegisterView(APIView):
@@ -166,6 +187,8 @@ class AuthSessionsView(APIView):
         } for token in OutstandingToken.objects.filter(user=request.user).exclude(blacklistedtoken__isnull=False).order_by("-created_at")]
         return ok(items)
 
+
+class AuthSessionDetailView(APIView):
     def delete(self, request, session_id):
         token = get_object_or_404(OutstandingToken, id=session_id, user=request.user)
         current = False
@@ -231,6 +254,10 @@ class ChangePasswordView(APIView):
             return fail("New passwords do not match.")
         if not request.user.check_password(current):
             return fail("Current password is incorrect.")
+        try:
+            password_validation.validate_password(new, request.user)
+        except DjangoValidationError as exc:
+            return fail(" ".join(exc.messages))
         request.user.set_password(new)
         request.user.save(update_fields=["password"])
         update_session_auth_hash(request, request.user)
@@ -246,6 +273,7 @@ class UserImageView(APIView):
         file = request.FILES.get("file")
         if not file:
             return fail("file is required.")
+        validate_image_upload(file, 5 * 1024 * 1024)
         request.user.image = file
         request.user.save(update_fields=["image"])
         return ok({"imageUrl": request.build_absolute_uri(request.user.image.url)}, "Image updated")
@@ -356,6 +384,8 @@ class CarListCreateView(APIView):
         serializer.is_valid(raise_exception=True)
         car = serializer.save(seller=request.user, status=models.Car.Status.PENDING)
         files = request.FILES.getlist("images") or request.FILES.getlist("Images")
+        for file in files:
+            validate_image_upload(file)
         main_index = int(request.data.get("mainImageIndex", request.data.get("MainImageIndex", 0)) or 0)
         for index, file in enumerate(files):
             models.CarImage.objects.create(car=car, image=file, display_order=index, is_main=index == main_index)
@@ -401,6 +431,7 @@ class CarDetailView(APIView):
             new_images = []
             start = car.images.count()
             for index, file in enumerate(request.FILES.getlist("Images") or request.FILES.getlist("images")):
+                validate_image_upload(file)
                 new_images.append(models.CarImage.objects.create(
                     car=car, image=file, display_order=start + index, is_main=False
                 ))
@@ -516,7 +547,9 @@ class ReviewDetailView(APIView):
 class ChatsView(APIView):
     serializer_class = serializers.ChatSerializer
     def get(self, request):
-        query = models.Chat.objects.select_related("car", "buyer", "seller").prefetch_related("messages").filter(
+        query = models.Chat.objects.select_related(
+            "car", "buyer", "seller", "buyer__realtime_presence", "seller__realtime_presence"
+        ).prefetch_related("messages").filter(
             Q(buyer=request.user) | Q(seller=request.user)
         ).order_by("-updated_at")
         return ok(page(request, query, serializers.ChatSerializer))
@@ -577,11 +610,13 @@ class VehicleHistoryListView(APIView):
         return [permissions.AllowAny()] if self.request.method == "GET" else [permissions.IsAuthenticated()]
 
     def get(self, request, car_id):
-        return ok(serializers.VehicleHistorySerializer(models.VehicleHistory.objects.filter(car_id=car_id), many=True).data)
+        return ok(serializers.VehicleHistorySerializer(
+            models.VehicleHistory.objects.filter(car_id=car_id), many=True, context={"request": request}
+        ).data)
 
     def post(self, request, car_id):
         car = owned_car_or_404(request.user, car_id)
-        serializer = serializers.VehicleHistorySerializer(data=request.data)
+        serializer = serializers.VehicleHistorySerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         serializer.save(car=car)
         return ok(serializer.data, "History created", status=201)
@@ -592,7 +627,7 @@ class VehicleHistoryDetailView(APIView):
     def put(self, request, history_id):
         item = get_object_or_404(models.VehicleHistory.objects.select_related("car"), id=history_id)
         owned_car_or_404(request.user, item.car_id)
-        serializer = serializers.VehicleHistorySerializer(item, data=request.data)
+        serializer = serializers.VehicleHistorySerializer(item, data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return ok(serializer.data)
@@ -671,7 +706,12 @@ class CloseAccountView(APIView):
         user.deletion_reason = reason
         user.deletion_details = details
         user.save()
-        return ok(message="Account closed")
+        for token in OutstandingToken.objects.filter(user=user):
+            BlacklistedToken.objects.get_or_create(token=token)
+        write_audit(request, "AccountClosed", "User", user.id, reason)
+        response = ok(message="Account closed")
+        response.delete_cookie("refreshToken")
+        return response
 
 
 class NotificationsView(APIView):
@@ -858,6 +898,7 @@ class CarUploadView(APIView):
         file = request.FILES.get("File") or request.FILES.get("file")
         if not file:
             return fail("File is required.")
+        validate_image_upload(file)
         image = models.CarImage(image=file)
         image.image.save(file.name, file, save=False)
         return ok(request.build_absolute_uri(image.image.url), "File uploaded")

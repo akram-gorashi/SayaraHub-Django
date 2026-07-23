@@ -35,8 +35,8 @@ class RealtimeTests(TransactionTestCase):
             socket = WebsocketCommunicator(
                 application, f"/ws/notifications/?ticket={ticket}&afterId=0"
             )
-            connected, _ = await socket.connect()
-            self.assertTrue(connected)
+            connected, detail = await socket.connect()
+            self.assertTrue(connected, f"WebSocket rejected with {detail}")
             event = await socket.receive_json_from()
             self.assertEqual(event["type"], "notification.received")
             self.assertEqual(event["notification"]["id"], notification.id)
@@ -56,7 +56,8 @@ class RealtimeTests(TransactionTestCase):
         car = models.Car.objects.get(title="2024 Toyota Camry")
         chat = models.Chat.objects.create(car=car, buyer=self.user, seller=car.seller)
         message = models.Message.objects.create(chat=chat, sender=car.seller, content="Still interested?")
-        token = str(RefreshToken.for_user(self.user).access_token)
+        ticket = "one-time-chat-ticket"
+        cache.set(f"ws-ticket:{ticket}", self.user.id, timeout=30)
         application = JwtAuthMiddleware(URLRouter(websocket_urlpatterns))
 
         async def receive_type(socket, event_type):
@@ -68,10 +69,10 @@ class RealtimeTests(TransactionTestCase):
 
         async def scenario():
             socket = WebsocketCommunicator(
-                application, f"/ws/chats/{chat.id}/?token={token}&afterId=0"
+                application, f"/ws/chats/{chat.id}/?ticket={ticket}&afterId=0"
             )
-            connected, _ = await socket.connect()
-            self.assertTrue(connected)
+            connected, detail = await socket.connect()
+            self.assertTrue(connected, f"WebSocket rejected with {detail}")
             caught_up = await receive_type(socket, "message.received")
             self.assertEqual(caught_up["message"]["id"], message.id)
 

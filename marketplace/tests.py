@@ -55,3 +55,37 @@ class ApiFlowTests(APITestCase):
         car.refresh_from_db()
         self.assertEqual(car.status, models.Car.Status.AVAILABLE)
         self.assertTrue(models.Notification.objects.filter(user=seller, type="ListingApproved").exists())
+
+    def test_session_ticket_and_notification_preferences(self):
+        self.login()
+        sessions = self.client.get("/api/v1/Auth/sessions")
+        self.assertEqual(sessions.status_code, 200)
+        self.assertGreaterEqual(len(sessions.data["data"]), 1)
+
+        ticket = self.client.post("/api/v1/Auth/websocket-ticket", {}, format="json")
+        self.assertEqual(ticket.status_code, 200)
+        self.assertTrue(ticket.data["data"]["ticket"])
+
+        preferences = self.client.put("/api/v1/notifications/preferences", {
+            "preferences": [{"eventType": "ChatMessage", "isEnabled": False}]
+        }, format="json")
+        self.assertEqual(preferences.status_code, 200)
+        self.assertFalse(next(item for item in preferences.data["data"] if item["eventType"] == "ChatMessage")["isEnabled"])
+
+    def test_seller_detail_images_and_numeric_moderation_contract(self):
+        car = models.Car.objects.get()
+        self.login()
+        detail = self.client.get(f"/api/v1/seller/cars/{car.id}")
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(detail.data["data"]["carBrandId"], car.brand_id)
+        self.assertIn("imageProcessing", detail.data["data"])
+
+        car.status = models.Car.Status.PENDING
+        car.save(update_fields=["status"])
+        self.login("admin@sayarahub.local", "AdminDemo_44")
+        moderated = self.client.patch(
+            f"/api/v1/admin/moderation/cars/{car.id}", {"decision": 1}, format="json"
+        )
+        self.assertEqual(moderated.status_code, 200)
+        stats = self.client.get("/api/v1/admin/moderation/statistics")
+        self.assertEqual(set(stats.data["data"]), {"pending", "approved", "rejected"})

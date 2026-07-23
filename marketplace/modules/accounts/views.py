@@ -1,7 +1,7 @@
 """Account, authentication, profile, privacy, and blocking endpoints."""
 from marketplace.views import (
     AuthLoginView, AuthRefreshView, AuthRegisterView, AuthRevokeAllView, AuthRevokeView,
-    AuthSessionsView, AuthRevokeOtherSessionsView, WebSocketTicketView,
+    AuthSessionsView, AuthSessionDetailView, AuthRevokeOtherSessionsView, WebSocketTicketView,
     BlockedUsersView, BlockUserView, ChangePasswordView, CloseAccountView,
     PublicUserView, SettingsView, UserImageView, UserMeView,
 )
@@ -10,7 +10,7 @@ from marketplace.openapi import tag_views
 tag_views(
     "Accounts",
     AuthLoginView, AuthRefreshView, AuthRegisterView, AuthRevokeAllView, AuthRevokeView,
-    AuthSessionsView, AuthRevokeOtherSessionsView, WebSocketTicketView,
+    AuthSessionsView, AuthSessionDetailView, AuthRevokeOtherSessionsView, WebSocketTicketView,
     BlockedUsersView, BlockUserView, ChangePasswordView, CloseAccountView,
     PublicUserView, SettingsView, UserImageView, UserMeView,
 )
