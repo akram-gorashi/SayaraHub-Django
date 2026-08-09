@@ -308,49 +308,6 @@ class UserImageView(APIView):
         return ok(message="Image removed")
 
 
-MASTER_MODELS = {
-    "body-types": (models.BodyType, serializers.MasterDataSerializer),
-    "car-brands": (models.CarBrand, serializers.MasterDataSerializer),
-    "car-models": (models.CarModel, serializers.CarModelMasterSerializer),
-    "car-conditions": (models.CarCondition, serializers.MasterDataSerializer),
-    "features": (models.Feature, serializers.MasterDataSerializer),
-    "fuel-types": (models.FuelType, serializers.MasterDataSerializer),
-    "transmissions": (models.Transmission, serializers.MasterDataSerializer),
-}
-
-
-class MasterDataListView(APIView):
-    permission_classes = [permissions.AllowAny]
-    serializer_class = serializers.MasterDataSerializer
-
-    def get(self, request, kind=None):
-        if kind:
-            model, serializer = MASTER_MODELS[kind]
-            query = model.objects.all()
-            name = request.query_params.get("name")
-            if name:
-                query = query.filter(name__icontains=name)
-            return ok(page(request, query, serializer))
-        data = {}
-        keys = {
-            "bodyTypes": "body-types", "carBrands": "car-brands", "carModels": "car-models",
-            "carConditions": "car-conditions", "features": "features",
-            "fuelTypes": "fuel-types", "transmissions": "transmissions",
-        }
-        for output, key in keys.items():
-            model, serializer = MASTER_MODELS[key]
-            data[output] = page(request, model.objects.all(), serializer)
-        return ok(data)
-
-
-class BrandModelsView(APIView):
-    permission_classes = [permissions.AllowAny]
-    serializer_class = serializers.CarModelMasterSerializer
-
-    def get(self, request, brand_id):
-        return ok(page(request, models.CarModel.objects.filter(brand_id=brand_id), serializers.CarModelMasterSerializer))
-
-
 def car_queryset(include_details=False):
     query = models.Car.objects.select_related(
         "brand", "model", "body_type", "condition", "transmission", "fuel_type", "seller"

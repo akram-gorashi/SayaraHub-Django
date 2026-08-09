@@ -2,6 +2,7 @@ from django.core.management import call_command
 from django.db import connection
 from django.db import IntegrityError, transaction
 from django.test.utils import CaptureQueriesContext
+from unittest.mock import patch
 from rest_framework.test import APITestCase
 from . import models
 
@@ -23,6 +24,40 @@ class ApiFlowTests(APITestCase):
         self.assertTrue(response.data["success"])
         self.assertEqual(response.data["data"]["totalCount"], 1)
         self.assertIn("mainImageUrl", response.data["data"]["items"][0])
+
+    def test_ninja_master_data_preserves_contract_and_validates_queries(self):
+        response = self.client.get("/api/v1/MasterData/car-brands?pageNumber=1&pageSize=5")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["data"]["pageNumber"], 1)
+        self.assertEqual(payload["data"]["pageSize"], 5)
+        self.assertGreater(payload["data"]["totalCount"], 0)
+
+        invalid = self.client.get("/api/v1/MasterData/car-brands?pageSize=101")
+        self.assertEqual(invalid.status_code, 422)
+        self.assertEqual(invalid.json()["message"], "Validation failed")
+
+        missing = self.client.get("/api/v1/MasterData/not-a-kind")
+        self.assertEqual(missing.status_code, 404)
+        self.assertFalse(missing.json()["success"])
+
+    def test_ninja_openapi_documents_migrated_routes(self):
+        response = self.client.get("/api/v1/openapi.json")
+        self.assertEqual(response.status_code, 200)
+        paths = response.json()["paths"]
+        self.assertIn("/api/v1/MasterData", paths)
+        self.assertIn("/api/v1/MasterData/{kind}", paths)
+        self.assertIn("/api/v1/Auth/login", paths)
+        self.assertIn("/api/v1/Cars", paths)
+        self.assertIn("/api/v1/chats", paths)
+        self.assertIn("/api/v1/admin/moderation/cars", paths)
+        self.assertGreaterEqual(len(paths), 90)
+
+        docs_redirect = self.client.get("/api/docs/")
+        schema_redirect = self.client.get("/api/schema/")
+        self.assertRedirects(docs_redirect, "/api/v1/docs/", fetch_redirect_response=False)
+        self.assertRedirects(schema_redirect, "/api/v1/openapi.json", fetch_redirect_response=False)
 
     def test_register_login_and_profile(self):
         response = self.client.post("/api/v1/Auth/register", {
@@ -217,6 +252,15 @@ class ApiFlowTests(APITestCase):
         models.CarImage.objects.create(car=car, image="cars/main-one.jpg", is_main=True)
         with self.assertRaises(IntegrityError), transaction.atomic():
             models.CarImage.objects.create(car=car, image="cars/main-two.jpg", is_main=True)
+
+    def test_car_image_task_dispatch_failure_does_not_fail_committed_save(self):
+        car = models.Car.objects.get()
+        with patch("marketplace.tasks.process_car_image.delay", side_effect=RuntimeError("broker unavailable")) as delay:
+            with self.captureOnCommitCallbacks(execute=True):
+                image = models.CarImage.objects.create(car=car, image="cars/pending-dispatch.jpg")
+
+        delay.assert_called_once_with(image.id)
+        self.assertTrue(models.CarImage.objects.filter(id=image.id, processing_status="Pending").exists())
 
     def test_feature_flags_and_postgres_search_remain_available(self):
         flags = self.client.get("/api/v1/features")

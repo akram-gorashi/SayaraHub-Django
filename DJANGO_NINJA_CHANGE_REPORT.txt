@@ -1,0 +1,142 @@
+SAYARAHUB DJANGO NINJA CHANGE AND VERIFICATION REPORT
+Generated: 2026-08-09
+
+1. PURPOSE
+
+The Django HTTP API routing layer was moved to Django Ninja while preserving the URLs and JSON contracts used by
+the Angular application. The work also consolidated API documentation, improved naming, added schema validation,
+ran backend and frontend verification, and fixed a dependency vulnerability found during the audit.
+
+2. API STRUCTURE
+
+- config/api.py is the single root NinjaAPI definition.
+- config/urls.py mounts that API at /api/v1/.
+- Each feature module owns a ninja_api.py file and a Router:
+  - marketplace/modules/accounts/ninja_api.py
+  - marketplace/modules/catalog/ninja_api.py
+  - marketplace/modules/messaging/ninja_api.py
+  - marketplace/modules/reviews_safety/ninja_api.py
+  - marketplace/modules/moderation/ninja_api.py
+- marketplace/api_view_bridge.py is the explicitly named adapter for APIView implementations that have not yet
+  been rewritten as native Ninja functions.
+- Native master-data endpoints use Ninja Schema classes, typed query parameters, response schemas, and ORM queries.
+- All 90 public paths and 115 HTTP method operations are present in Ninja OpenAPI.
+- The old marketplace URL modules were deleted because they were unused duplicate routing sources.
+
+3. NAMING CONVENTIONS
+
+- Python files, functions, variables, and modules use snake_case.
+- Classes and Ninja schema types use PascalCase.
+- Module-level route collections use descriptive uppercase constants: API_VIEW_ROUTE_DEFINITIONS.
+- Handler functions use verb-first names, including:
+  - list_all_master_data
+  - list_car_models_by_brand
+  - list_master_data_category
+- OpenAPI operation IDs use the same verb-first convention.
+- The adapter is named api_view_bridge instead of ninja_compat or legacy because its responsibility is dispatching
+  APIView implementations behind Ninja-owned routes.
+- Helper names describe their result, for example _extract_path_parameter_names.
+- Route collections are registered through register_api_view_definitions instead of positional tuple slicing.
+- Existing public URLs keep their original casing and aliases so Angular and external clients are not broken.
+
+4. OPENAPI AND DOCUMENTATION
+
+- Django Ninja Swagger is available at /api/v1/docs/.
+- Django Ninja OpenAPI JSON is available at /api/v1/openapi.json.
+- /api/docs/ redirects to /api/v1/docs/ for compatibility.
+- /api/schema/ redirects to /api/v1/openapi.json for compatibility.
+- The stale second DRF OpenAPI/Swagger stack was removed.
+- drf-spectacular was removed from requirements and INSTALLED_APPS.
+- The old schema.yml file and marketplace/openapi.py annotations were removed.
+- validate_ninja_openapi is a new management command that checks JSON serialization, required module paths, path
+  count, and operation count.
+- CI now runs python manage.py validate_ninja_openapi.
+
+5. TESTS AND CHECKS RUN
+
+Backend:
+- ruff check .: PASSED
+- selected strict mypy checks: PASSED, no issues in 6 files
+- python manage.py makemigrations --check --dry-run: PASSED, no changes detected
+- python manage.py check: PASSED
+- python manage.py validate_ninja_openapi: PASSED, 90 paths and 115 operations
+- pytest with marketplace coverage: PASSED, 18 of 18 tests
+- total backend coverage: 75 percent
+- marketplace/api_view_bridge.py coverage: 100 percent
+- pip check: PASSED, no broken requirements
+- pip-audit --local: PASSED after dependency fixes, no known vulnerabilities
+
+Angular:
+- npm test -- --watch=false: PASSED, 20 of 20 tests in 12 files
+- npm run build: PASSED, production bundle generated
+- npm audit --omit=dev --audit-level=high: PASSED, zero production vulnerabilities
+
+Live Angular-to-Django proxy smoke test:
+- Angular application shell: HTTP 200 and app-root present
+- /api/v1/MasterData through Angular proxy: HTTP 200 and success envelope present
+- /api/v1/Cars through Angular proxy: HTTP 200 and success envelope present
+- /api/v1/openapi.json through Angular proxy: HTTP 200 and SayaraHub Ninja schema present
+- /api/docs/ through Angular proxy: HTTP 200 after redirect and Swagger content present
+- Temporary Django and Angular development processes were stopped after the smoke test.
+
+6. ISSUES FOUND AND FIXED
+
+- Removed parallel DRF and Ninja documentation sources, which could publish a stale or incomplete API schema.
+- Removed unused Django URL modules after Ninja became the routing source of truth.
+- Removed five unused feature views.py re-export modules and five unused feature models.py re-export modules.
+- Removed the unreachable DRF MasterDataListView and BrandModelsView implementations after confirming that the
+  native Ninja master-data operations own those routes.
+- Removed the now-unused MasterDataSerializer and CarModelMasterSerializer classes.
+- Updated feature routers to import active handlers directly from marketplace.views.
+- Reduced measured backend code from 2,629 to 2,574 statements without changing the 90 paths, 115 operations,
+  75 percent coverage result, or any public contract.
+- Replaced generic and age-based names such as ROUTES, LEGACY_ROUTES, register_legacy_view, and ninja_compat with
+  responsibility-based names.
+- Added coverage assertions for authentication, catalog, messaging, moderation, documentation redirects, and the
+  minimum complete Ninja path count.
+- pip-audit found PYSEC-2026-3552 in cryptography 49.0.0.
+- Upgraded and pinned cryptography to >=50,<51.
+- Upgraded and pinned pyOpenSSL to >=26.4,<27 because pyOpenSSL 26.3 was incompatible with cryptography 50.
+- Verified the final dependency set with both pip check and pip-audit.
+- The live test found that the ignored local db.sqlite3 file was behind the current migration set. Applied existing
+  migrations 0002 through 0009, applied Simple JWT blacklist migrations, and reran seed_demo. The /features endpoint
+  and the complete Angular proxy smoke set then passed.
+- A manual car save exposed a 109-second request followed by HTTP 500 when Redis was unavailable. The database save
+  had committed, but the CarImage post-commit signal blocked while Celery retried the Redis result backend.
+- SQLite development mode now enables CELERY_TASK_ALWAYS_EAGER, so image processing runs locally without Redis.
+- Added dispatch_task_after_commit so a broker outage cannot fail an HTTP response after its database transaction
+  has already committed.
+- Added a regression test for failed task dispatch. The suite now contains 18 passing tests.
+- Reproduced a real multipart car creation with one JPEG through the Angular proxy: HTTP 201 in 2.14 seconds. The
+  image reached Completed status, processing_attempts was 1, a thumbnail was created, and no processing error remained.
+
+7. IMPORTANT LIMITATIONS AND NEXT STEP
+
+- PostgreSQL and Redis service-backed tests could not run locally because Docker was unavailable and the running
+  local PostgreSQL server rejected the configured password. The complete automated suite ran using the project's
+  supported SQLite/locmem test configuration.
+- There is no browser end-to-end framework in the Angular project. Integration was verified with Angular unit
+  tests, a production build, and live HTTP requests through Angular's real development proxy.
+- The local interpreter is Python 3.14 and Daphne emits upstream asyncio deprecation warnings on that version.
+  Project CI targets Python 3.13, where this future-removal warning does not apply.
+- The migration is not yet dependency-free from Django REST Framework. Master data is native Ninja, but other
+  endpoint implementations still execute through marketplace/api_view_bridge.py to preserve proven JWT,
+  throttling, multipart, serializer, and exception behavior. DRF must remain installed until those implementations
+  are replaced module by module with native Ninja request/response schemas and authentication.
+
+8. HOW TO REPEAT THE MAIN VERIFICATION
+
+Backend PowerShell commands:
+  $env:DATABASE_ENGINE = "sqlite"
+  .\.venv\Scripts\python.exe -m ruff check .
+  .\.venv\Scripts\python.exe manage.py makemigrations --check --dry-run
+  .\.venv\Scripts\python.exe manage.py check
+  .\.venv\Scripts\python.exe manage.py validate_ninja_openapi
+  .\.venv\Scripts\python.exe -m pytest --cov=marketplace --cov-report=term-missing
+  .\.venv\Scripts\python.exe -m pip check
+  .\.venv\Scripts\python.exe -m pip_audit --local
+
+Angular commands:
+  npm.cmd test -- --watch=false
+  npm.cmd run build
+  npm.cmd audit --omit=dev --audit-level=high

@@ -25,7 +25,9 @@ docker compose ps
 ```
 
 - API: `http://localhost:8000/api/v1`
-- Swagger: `http://localhost:8000/api/docs/`
+- Django Ninja Swagger (migrated endpoints): `http://localhost:8000/api/v1/docs/`
+- Compatibility docs URL (redirects to Ninja): `http://localhost:8000/api/docs/`
+- Migration guide: [`docs/DJANGO_NINJA_MIGRATION.md`](docs/DJANGO_NINJA_MIGRATION.md)
 - Django admin: `http://localhost:8000/admin/`
 - Health: `http://localhost:8000/health/ready`
 
