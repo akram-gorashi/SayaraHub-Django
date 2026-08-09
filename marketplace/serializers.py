@@ -94,21 +94,6 @@ class PublicUserSerializer(serializers.ModelSerializer):
         return url_for(self.context.get("request"), obj.image)
 
 
-class MasterDataSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = models.BodyType
-        fields = ("id", "name")
-
-
-class CarModelMasterSerializer(serializers.ModelSerializer):
-    carBrandId = serializers.IntegerField(source="brand_id")
-    carBrandName = serializers.CharField(source="brand.name")
-
-    class Meta:
-        model = models.CarModel
-        fields = ("id", "name", "carBrandId", "carBrandName")
-
-
 class CarSummarySerializer(serializers.ModelSerializer):
     brand = serializers.CharField(source="brand.name")
     model = serializers.CharField(source="model.name")
@@ -504,5 +489,5 @@ class ModerateReportRequestSerializer(serializers.Serializer):
 
 
 class ModerateReviewRequestSerializer(serializers.Serializer):
-    decision = serializers.CharField(help_text="Approve/Reject (the legacy Angular client may also send 1/0).")
+    decision = serializers.CharField(help_text="Approve/Reject (existing Angular clients may also send 1/0).")
     reason = serializers.CharField(required=False, allow_blank=True)

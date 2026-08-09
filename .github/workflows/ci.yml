@@ -57,6 +57,6 @@ jobs:
       - name: API and realtime tests
         run: pytest --cov=marketplace --cov-report=term-missing
       - name: OpenAPI validation
-        run: python manage.py spectacular --validate --file schema.yml
+        run: python manage.py validate_ninja_openapi
       - name: Dependency vulnerabilities
         run: pip-audit -r requirements.txt

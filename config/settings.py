@@ -29,7 +29,7 @@ INSTALLED_APPS = [
     "corsheaders",
     "rest_framework",
     "rest_framework_simplejwt.token_blacklist",
-    "drf_spectacular",
+    "ninja",
     "marketplace",
     "django_cleanup.apps.CleanupConfig",
 ]
@@ -63,7 +63,9 @@ TEMPLATES = [{
     ]},
 }]
 
-if env("DATABASE_ENGINE") == "sqlite":
+USING_SQLITE = env("DATABASE_ENGINE").lower() == "sqlite"
+
+if USING_SQLITE:
     DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": BASE_DIR / "db.sqlite3"}}
 else:
     DATABASES = {"default": {
@@ -111,7 +113,6 @@ SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": ("marketplace.authentication.SessionTrackingJWTAuthentication",),
     "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
-    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "EXCEPTION_HANDLER": "marketplace.responses.api_exception_handler",
     "DEFAULT_THROTTLE_CLASSES": (
         "rest_framework.throttling.AnonRateThrottle",
@@ -133,18 +134,6 @@ SIMPLE_JWT = {
     "BLACKLIST_AFTER_ROTATION": True,
     "USER_ID_CLAIM": "sub",
 }
-SPECTACULAR_SETTINGS = {
-    "TITLE": "SayaraHub Django API",
-    "VERSION": "1.0.0",
-    "TAGS": [
-        {"name": "Accounts", "description": "Authentication, profiles, privacy settings, and blocking."},
-        {"name": "Catalog & Listings", "description": "Master data, cars, favorites, seller tools, drafts, and saved searches."},
-        {"name": "Messaging & Notifications", "description": "Chats, contact inquiries, and persistent notifications."},
-        {"name": "Reviews & Safety", "description": "Seller reviews and user reports."},
-        {"name": "Administration & Moderation", "description": "Administrator listing, review, and report workflows."},
-    ],
-}
-
 REDIS_URL = env("REDIS_URL", "redis://localhost:6379/0")
 CHANNEL_LAYERS = {
     "default": {
@@ -172,13 +161,18 @@ CELERY_TASK_ACKS_LATE = True
 CELERY_TASK_REJECT_ON_WORKER_LOST = True
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_ALWAYS_EAGER = env(
+    "CELERY_TASK_ALWAYS_EAGER",
+    "true" if USING_SQLITE else "false",
+).lower() == "true"
+CELERY_TASK_EAGER_PROPAGATES = False
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.redis.RedisCache",
         "LOCATION": REDIS_URL,
     }
 }
-if env("DATABASE_ENGINE") == "sqlite":
+if USING_SQLITE:
     CACHES = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
     CHANNEL_LAYERS = {"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
 WEBSOCKET_TICKET_TTL_SECONDS = 30

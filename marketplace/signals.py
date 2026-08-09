@@ -1,3 +1,5 @@
+import logging
+
 from django.db.models.signals import post_delete, post_save, pre_save
 from django.dispatch import receiver
 from django.db import transaction
@@ -5,6 +7,20 @@ from django.core.cache import cache
 from . import models
 from .realtime.publisher import enqueue_event
 from .serializers import MessageSerializer, NotificationSerializer
+
+
+logger = logging.getLogger(__name__)
+
+
+def dispatch_task_after_commit(task, *args):
+    """Dispatch background work without failing an already-committed HTTP request."""
+    def dispatch():
+        try:
+            task.delay(*args)
+        except Exception:
+            logger.exception("Could not dispatch Celery task %s with args %s", task.name, args)
+
+    transaction.on_commit(dispatch)
 
 
 @receiver([post_save, post_delete], sender=models.FeatureFlag)
@@ -50,9 +66,7 @@ def publish_notification(sender, instance, created, **kwargs):
         )
         if instance.user.receive_email_notifications:
             from .tasks import send_notification_email
-            transaction.on_commit(lambda: send_notification_email.delay(
-                instance.user_id, instance.title, instance.message
-            ))
+            dispatch_task_after_commit(send_notification_email, instance.user_id, instance.title, instance.message)
 
 
 @receiver(post_save, sender=models.ContactMessage)
@@ -73,7 +87,7 @@ def notify_contact_inquiry(sender, instance, created, **kwargs):
 def queue_image_processing(sender, instance, created, **kwargs):
     if created and instance.processing_status == "Pending":
         from .tasks import process_car_image
-        transaction.on_commit(lambda: process_car_image.delay(instance.id))
+        dispatch_task_after_commit(process_car_image, instance.id)
 
 
 @receiver(pre_save, sender=models.Car)
