@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from rest_framework import serializers
 from rest_framework_simplejwt.tokens import RefreshToken
 from . import models
+from .sessions import create_auth_session
 
 
 def url_for(request, field):
@@ -41,9 +42,11 @@ class LoginSerializer(serializers.Serializer):
         return attrs
 
 
-def auth_payload(user, refresh=None, access=None):
+def auth_payload(user, refresh=None, access=None, request=None):
     refresh = refresh or RefreshToken.for_user(user)
+    session = create_auth_session(user, refresh, request)
     access = access or refresh.access_token
+    access["sid"] = str(session.id)
     return {
         "token": str(access),
         "refreshToken": str(refresh),

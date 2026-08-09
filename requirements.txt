@@ -14,3 +14,4 @@ redis>=6,<7
 prometheus-client>=0.22,<1
 whitenoise[brotli]>=6.9,<7
 django-cleanup>=9,<10
+user-agents>=2.2,<3

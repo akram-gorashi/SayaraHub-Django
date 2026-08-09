@@ -1,0 +1,62 @@
+name: Django CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: sayarahub_test
+          POSTGRES_USER: sayarahub
+          POSTGRES_PASSWORD: sayarahub
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sayarahub"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DJANGO_SECRET_KEY: ci-only-signing-key-with-more-than-thirty-two-characters
+      DJANGO_DEBUG: "false"
+      POSTGRES_DB: sayarahub_test
+      POSTGRES_USER: sayarahub
+      POSTGRES_PASSWORD: sayarahub
+      POSTGRES_HOST: localhost
+      REDIS_URL: redis://localhost:6379/0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements-dev.txt
+      - name: Ruff
+        run: ruff check .
+      - name: Type checks
+        run: mypy marketplace/authentication.py marketplace/feature_flags.py marketplace/idempotency.py marketplace/responses.py marketplace/sessions.py
+      - name: Migration drift
+        run: python manage.py makemigrations --check --dry-run
+      - name: Django deployment checks
+        run: python manage.py check
+      - name: API and realtime tests
+        run: pytest --cov=marketplace --cov-report=term-missing
+      - name: OpenAPI validation
+        run: python manage.py spectacular --validate --file schema.yml
+      - name: Dependency vulnerabilities
+        run: pip-audit -r requirements.txt

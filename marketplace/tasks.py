@@ -97,7 +97,16 @@ def cleanup_stale_presence():
 def cleanup_expired_runtime_data():
     now = timezone.now()
     expired_tokens, _ = OutstandingToken.objects.filter(expires_at__lt=now).delete()
+    expired_sessions, _ = models.AuthSession.objects.filter(expires_at__lt=now).delete()
+    idempotency_records, _ = models.IdempotencyRecord.objects.filter(
+        created_at__lt=now - timedelta(days=7)
+    ).delete()
     old_outbox, _ = models.RealtimeOutboxEvent.objects.filter(
         processed_at__lt=now - timedelta(days=7)
     ).delete()
-    return {"expiredTokens": expired_tokens, "processedOutboxEvents": old_outbox}
+    return {
+        "expiredTokens": expired_tokens,
+        "expiredSessions": expired_sessions,
+        "idempotencyRecords": idempotency_records,
+        "processedOutboxEvents": old_outbox,
+    }

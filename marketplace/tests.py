@@ -1,5 +1,6 @@
 from django.core.management import call_command
 from django.db import connection
+from django.db import IntegrityError, transaction
 from django.test.utils import CaptureQueriesContext
 from rest_framework.test import APITestCase
 from . import models
@@ -70,10 +71,27 @@ class ApiFlowTests(APITestCase):
         self.assertTrue(models.Notification.objects.filter(user=seller, type="ListingApproved").exists())
 
     def test_session_ticket_and_notification_preferences(self):
-        self.login()
+        self.client.post(
+            "/api/v1/Auth/login",
+            {"email": "seller@sayarahub.local", "password": "SellerDemo_44"},
+            format="json",
+            HTTP_USER_AGENT="Mozilla/5.0 Chrome/140.0.0.0 Safari/537.36",
+            REMOTE_ADDR="203.0.113.10",
+        )
+        login = self.client.post(
+            "/api/v1/Auth/login",
+            {"email": "seller@sayarahub.local", "password": "SellerDemo_44"},
+            format="json",
+            HTTP_USER_AGENT="Mozilla/5.0 Chrome/140.0.0.0 Safari/537.36",
+            REMOTE_ADDR="203.0.113.10",
+        )
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {login.data["data"]["token"]}')
         sessions = self.client.get("/api/v1/Auth/sessions")
         self.assertEqual(sessions.status_code, 200)
         self.assertGreaterEqual(len(sessions.data["data"]), 1)
+        current = next(item for item in sessions.data["data"] if item["isCurrent"])
+        self.assertIn("Chrome", current["browser"])
+        self.assertEqual(current["ipAddress"], "203.0.113.10")
 
         ticket = self.client.post("/api/v1/Auth/websocket-ticket", {}, format="json")
         self.assertEqual(ticket.status_code, 200)
@@ -145,3 +163,66 @@ class ApiFlowTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["data"]["pendingImageCount"], 1)
         self.assertEqual(response.data["data"]["failedImageCount"], 1)
+
+    def test_cursor_pagination_is_signed_and_does_not_duplicate_items(self):
+        seller = models.User.objects.get(email="seller@sayarahub.local")
+        for index in range(5):
+            models.Notification.objects.create(
+                user=seller, type="CursorTest", title=f"Notice {index}", message="Cursor pagination"
+            )
+        self.login()
+        first = self.client.get("/api/v1/notifications?pagination=cursor&pageSize=2")
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.data["data"]["paginationMode"], "cursor")
+        self.assertEqual(len(first.data["data"]["items"]), 2)
+        cursor = first.data["data"]["nextCursor"]
+        second = self.client.get(
+            "/api/v1/notifications", {"pagination": "cursor", "pageSize": 2, "cursor": cursor}
+        )
+        first_ids = {item["id"] for item in first.data["data"]["items"]}
+        second_ids = {item["id"] for item in second.data["data"]["items"]}
+        self.assertFalse(first_ids & second_ids)
+        invalid = self.client.get("/api/v1/notifications?pagination=cursor&cursor=tampered")
+        self.assertEqual(invalid.status_code, 400)
+
+    def test_contact_creation_replays_idempotently(self):
+        car = models.Car.objects.get()
+        payload = {
+            "name": "Interested Buyer",
+            "email": "buyer@example.com",
+            "subject": "Availability",
+            "message": "Is this still available?",
+        }
+        headers = {"HTTP_IDEMPOTENCY_KEY": "contact-request-0001"}
+        first = self.client.post(
+            f"/api/v1/cars/{car.id}/contact-messages", payload, format="json", **headers
+        )
+        second = self.client.post(
+            f"/api/v1/cars/{car.id}/contact-messages", payload, format="json", **headers
+        )
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 201)
+        self.assertEqual(second["Idempotency-Replayed"], "true")
+        self.assertEqual(models.ContactMessage.objects.filter(car=car).count(), 1)
+        changed = self.client.post(
+            f"/api/v1/cars/{car.id}/contact-messages",
+            {**payload, "message": "A different request"},
+            format="json",
+            **headers,
+        )
+        self.assertEqual(changed.status_code, 409)
+
+    def test_only_one_main_image_is_allowed_per_car(self):
+        car = models.Car.objects.get()
+        models.CarImage.objects.create(car=car, image="cars/main-one.jpg", is_main=True)
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            models.CarImage.objects.create(car=car, image="cars/main-two.jpg", is_main=True)
+
+    def test_feature_flags_and_postgres_search_remain_available(self):
+        flags = self.client.get("/api/v1/features")
+        self.assertEqual(flags.status_code, 200)
+        self.assertTrue(flags.data["data"]["cursor-pagination"])
+        self.assertTrue(flags.data["data"]["postgres-full-text-search"])
+        search = self.client.get("/api/v1/Cars?search=Camry")
+        self.assertEqual(search.status_code, 200)
+        self.assertEqual(search.data["data"]["totalCount"], 1)

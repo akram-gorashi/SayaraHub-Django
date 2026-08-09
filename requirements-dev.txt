@@ -1,0 +1,12 @@
+-r requirements.txt
+factory-boy>=3.3,<4
+locust>=2.37,<3
+mypy>=1.16,<2
+django-stubs>=5.2,<6
+djangorestframework-stubs>=3.16,<4
+pip-audit>=2.9,<3
+pytest>=8,<10
+pytest-cov>=6,<8
+pytest-django>=4.11,<5
+ruff>=0.12,<1
+websocket-client>=1.8,<2

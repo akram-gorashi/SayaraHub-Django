@@ -15,5 +15,6 @@ for model in (
     models.Car, models.CarBrand, models.CarModel, models.BodyType, models.CarCondition,
     models.Feature, models.FuelType, models.Transmission, models.Review, models.Chat,
     models.Message, models.ContactMessage, models.Report, models.Notification, models.SavedSearch,
+    models.AuthSession, models.IdempotencyRecord, models.FeatureFlag,
 ):
     admin.site.register(model)

@@ -5,11 +5,11 @@ This matrix compares the ASP.NET controllers and production behaviors with the D
 | Capability | Django status | Implementation |
 |---|---|---|
 | Register, login, refresh, revoke, revoke all | Equivalent | SimpleJWT, rotated refresh cookies and blacklist |
-| Session list/revoke/revoke others | Equivalent API | SimpleJWT outstanding-token records; device labels are generic |
+| Session list/revoke/revoke others | Improved | Dedicated sessions include browser, device, IP, expiry and throttled last activity; revocation immediately rejects access tokens |
 | User profile, password and image | Equivalent | DRF ownership checks and validated image uploads |
 | Privacy/settings/account closure | Equivalent | Private profile, hidden phone, messaging controls and token revocation |
 | Master data | Equivalent | Protected lookup tables and paginated endpoints |
-| Car listing CRUD/filtering | Equivalent | PostgreSQL filters, multipart images and moderation reset |
+| Car listing CRUD/filtering | Improved | PostgreSQL weighted full-text/trigram search, filters, multipart images and moderation reset |
 | Standalone upload | Equivalent API | Validated local media storage |
 | Related/seller/mine/favorites | Equivalent | Ownership and unique database constraints |
 | Unique listing views | Equivalent | Visitor cookie/user key plus unique `(car, visitor)` constraint |
@@ -35,12 +35,16 @@ This matrix compares the ASP.NET controllers and production behaviors with the D
 | Runtime-data cleanup | Equivalent | Celery Beat removes expired token rows and completed outbox history |
 | Uploaded-file cleanup | Improved | Transaction-aware cleanup removes replaced/deleted media files |
 | Swagger | Equivalent | drf-spectacular with feature tags and concrete request bodies |
+| Large-history pagination | Improved | Opt-in signed cursor pagination for messages and notifications; page-number contracts remain available |
+| Retry-safe POST requests | Improved | Database-backed idempotency keys for listings, chats/messages, contacts and uploads |
+| Main listing image invariant | Improved | Conditional unique database constraint permits only one main image per car |
+| Controlled rollout | Added | Cached database feature flags with deterministic percentage rollout |
+| Load/quality automation | Improved | Locust HTTP/WebSocket scenarios plus Django and Angular CI quality/security gates |
+| Runtime container privileges | Improved | API, worker and Beat run as UID/GID 10001 |
 
 ## Intentional implementation differences
 
 - Django uses native WebSockets rather than implementing Microsoft’s SignalR wire protocol.
-- Session/device metadata is derived from SimpleJWT token records; detailed browser/IP activity
-  can be added by replacing it with a dedicated session model.
 - Media storage is local-volume based. The storage interface can be switched to S3 without
   changing API contracts.
 - The .NET observability deployment contains prebuilt Grafana dashboards; Django exposes

@@ -1,5 +1,6 @@
 from django.contrib.auth import update_session_auth_hash
 from django.contrib.auth import password_validation
+from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector, TrigramSimilarity
 from django.conf import settings
 from django.core.cache import cache
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -24,8 +25,10 @@ from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 from . import models, serializers
-from .responses import fail, ok, page
+from .responses import cursor_page, cursor_requested, fail, ok, page
 from .realtime.publisher import enqueue_event
+from .idempotency import idempotent
+from .feature_flags import is_feature_enabled
 
 
 class EmptySerializer(drf_serializers.Serializer):
@@ -107,7 +110,7 @@ class AuthRegisterView(APIView):
         serializer = serializers.RegisterSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
-        response = ok(serializers.auth_payload(user), "Registration successful", status.HTTP_201_CREATED)
+        response = ok(serializers.auth_payload(user, request=request), "Registration successful", status.HTTP_201_CREATED)
         response.set_cookie("refreshToken", response.data["data"]["refreshToken"], httponly=True, secure=not settings.DEBUG, samesite="Lax", max_age=604800)
         return response
 
@@ -120,7 +123,7 @@ class AuthLoginView(APIView):
     def post(self, request):
         serializer = serializers.LoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        response = ok(serializers.auth_payload(serializer.validated_data["user"]), "Login successful")
+        response = ok(serializers.auth_payload(serializer.validated_data["user"], request=request), "Login successful")
         response.set_cookie("refreshToken", response.data["data"]["refreshToken"], httponly=True, secure=not settings.DEBUG, samesite="Lax", max_age=604800)
         return response
 
@@ -132,13 +135,20 @@ class AuthRefreshView(APIView):
 
     def post(self, request):
         token = request.data.get("refreshToken") or request.COOKIES.get("refreshToken")
+        if not token:
+            return fail("refreshToken is required.")
+        try:
+            old_refresh = RefreshToken(token)
+        except Exception:
+            return fail("Invalid refresh token.", status=401)
         serializer = TokenRefreshSerializer(data={"refresh": token})
         serializer.is_valid(raise_exception=True)
         rotated = serializer.validated_data.get("refresh", token)
         refresh = RefreshToken(rotated)
         user = get_object_or_404(models.User, id=refresh["sub"], is_active=True)
+        models.AuthSession.objects.filter(refresh_jti=old_refresh["jti"], user=user).update(revoked_at=timezone.now())
         access = refresh.access_token
-        response = ok(serializers.auth_payload(user, refresh=refresh, access=access))
+        response = ok(serializers.auth_payload(user, refresh=refresh, access=access, request=request))
         response.set_cookie("refreshToken", str(refresh), httponly=True, secure=not settings.DEBUG, samesite="Lax", max_age=604800)
         return response
 
@@ -152,7 +162,9 @@ class AuthRevokeView(APIView):
         if not token:
             return fail("refreshToken is required.")
         try:
-            RefreshToken(token).blacklist()
+            refresh = RefreshToken(token)
+            refresh.blacklist()
+            models.AuthSession.objects.filter(refresh_jti=refresh["jti"]).update(revoked_at=timezone.now())
         except Exception:
             return fail("Invalid refresh token.")
         response = ok(message="Session revoked")
@@ -164,6 +176,7 @@ class AuthRevokeAllView(APIView):
     def post(self, request):
         for token in OutstandingToken.objects.filter(user=request.user):
             BlacklistedToken.objects.get_or_create(token=token)
+        models.AuthSession.objects.filter(user=request.user, revoked_at__isnull=True).update(revoked_at=timezone.now())
         response = ok(message="All sessions revoked")
         response.delete_cookie("refreshToken")
         return response
@@ -171,37 +184,31 @@ class AuthRevokeAllView(APIView):
 
 class AuthSessionsView(APIView):
     def get(self, request):
-        cookie = request.COOKIES.get("refreshToken")
-        current_jti = None
-        if cookie:
-            try:
-                current_jti = RefreshToken(cookie)["jti"]
-            except Exception:
-                pass
+        current_session_id = request.auth.get("sid") if request.auth else None
         items = [{
-            "id": str(token.id),
-            "deviceName": "Web browser",
-            "browser": "Unknown",
-            "ipAddress": None,
-            "createdAt": token.created_at,
-            "lastActivityAt": token.created_at,
-            "expiresAt": token.expires_at,
-            "isCurrent": token.jti == current_jti,
-        } for token in OutstandingToken.objects.filter(user=request.user).exclude(blacklistedtoken__isnull=False).order_by("-created_at")]
+            "id": str(session.id),
+            "deviceName": session.device_name,
+            "browser": session.browser,
+            "ipAddress": session.ip_address,
+            "createdAt": session.created_at,
+            "lastActivityAt": session.last_activity_at,
+            "expiresAt": session.expires_at,
+            "isCurrent": str(session.id) == str(current_session_id),
+        } for session in models.AuthSession.objects.filter(
+            user=request.user, revoked_at__isnull=True, expires_at__gt=timezone.now()
+        ).order_by("-last_activity_at")]
         return ok(items)
 
 
 class AuthSessionDetailView(APIView):
     def delete(self, request, session_id):
-        token = get_object_or_404(OutstandingToken, id=session_id, user=request.user)
-        current = False
-        cookie = request.COOKIES.get("refreshToken")
-        if cookie:
-            try:
-                current = RefreshToken(cookie)["jti"] == token.jti
-            except Exception:
-                pass
-        BlacklistedToken.objects.get_or_create(token=token)
+        session = get_object_or_404(models.AuthSession, id=session_id, user=request.user)
+        current = str(request.auth.get("sid")) == str(session.id) if request.auth else False
+        session.revoked_at = timezone.now()
+        session.save(update_fields=["revoked_at"])
+        token = OutstandingToken.objects.filter(jti=session.refresh_jti, user=request.user).first()
+        if token:
+            BlacklistedToken.objects.get_or_create(token=token)
         response = ok({"currentSessionRevoked": current})
         if current:
             response.delete_cookie("refreshToken")
@@ -210,9 +217,13 @@ class AuthSessionDetailView(APIView):
 
 class AuthRevokeOtherSessionsView(APIView):
     def post(self, request):
-        cookie = request.COOKIES.get("refreshToken")
-        current_jti = RefreshToken(cookie)["jti"] if cookie else None
-        for token in OutstandingToken.objects.filter(user=request.user).exclude(jti=current_jti):
+        current_session_id = request.auth.get("sid") if request.auth else None
+        other_sessions = models.AuthSession.objects.filter(
+            user=request.user, revoked_at__isnull=True
+        ).exclude(id=current_session_id)
+        other_jtis = list(other_sessions.values_list("refresh_jti", flat=True))
+        other_sessions.update(revoked_at=timezone.now())
+        for token in OutstandingToken.objects.filter(user=request.user, jti__in=other_jtis):
             BlacklistedToken.objects.get_or_create(token=token)
         return ok(message="Other sessions revoked")
 
@@ -223,6 +234,14 @@ class WebSocketTicketView(APIView):
         ttl = settings.WEBSOCKET_TICKET_TTL_SECONDS
         cache.set(f"ws-ticket:{ticket}", request.user.id, timeout=ttl)
         return ok({"ticket": ticket, "expiresAt": (timezone.now() + timedelta(seconds=ttl)).isoformat()})
+
+
+class FeatureFlagsView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        flags = models.FeatureFlag.objects.values_list("key", flat=True)
+        return ok({key: is_feature_enabled(key, request.user) for key in flags})
 
 
 class UserMeView(APIView):
@@ -361,7 +380,31 @@ class CarListCreateView(APIView):
         query = car_queryset().filter(status=models.Car.Status.AVAILABLE)
         search = request.query_params.get("search")
         if search:
-            query = query.filter(Q(title__icontains=search) | Q(brand__name__icontains=search) | Q(model__name__icontains=search))
+            if connection.vendor == "postgresql" and is_feature_enabled(
+                "postgres-full-text-search", request.user, default=True
+            ):
+                vector = (
+                    SearchVector("title", weight="A", config="simple")
+                    + SearchVector("description", weight="B", config="simple")
+                    + SearchVector("city", weight="C", config="simple")
+                )
+                search_query = SearchQuery(search, search_type="websearch", config="simple")
+                query = query.annotate(
+                    search_rank=SearchRank(vector, search_query),
+                    search_similarity=(
+                        TrigramSimilarity("title", search)
+                        + TrigramSimilarity("brand__name", search)
+                        + TrigramSimilarity("model__name", search)
+                    ),
+                ).filter(Q(search_rank__gte=0.05) | Q(search_similarity__gte=0.12))
+            else:
+                query = query.filter(
+                    Q(title__icontains=search)
+                    | Q(description__icontains=search)
+                    | Q(city__icontains=search)
+                    | Q(brand__name__icontains=search)
+                    | Q(model__name__icontains=search)
+                )
         mappings = {
             "brandIds": "brand_id__in", "modelIds": "model_id__in", "transmissionIds": "transmission_id__in",
             "fuelTypeIds": "fuel_type_id__in", "featureIds": "features__id__in",
@@ -376,6 +419,18 @@ class CarListCreateView(APIView):
                 query = query.filter(**{lookup: request.query_params[key]})
         if request.query_params.get("city"):
             query = query.filter(city__iexact=request.query_params["city"])
+        if (
+            search
+            and connection.vendor == "postgresql"
+            and hasattr(query, "query")
+            and "search_rank" in query.query.annotations
+            and not request.query_params.get("sortBy")
+        ):
+            return ok(page(
+                request,
+                query.distinct().order_by("-search_rank", "-search_similarity", "-id"),
+                serializers.CarSummarySerializer,
+            ))
         sort = {"price": "price", "year": "year", "mileage": "mileage", "listedDate": "listed_date"}.get(
             request.query_params.get("sortBy"), "listed_date"
         )
@@ -383,6 +438,7 @@ class CarListCreateView(APIView):
             sort = f"-{sort}"
         return ok(page(request, query.distinct().order_by(sort, "-id"), serializers.CarSummarySerializer))
 
+    @idempotent("cars.create")
     @transaction.atomic
     def post(self, request):
         data = normalized_car_data(request)
@@ -571,6 +627,7 @@ class ChatsView(APIView):
 
 class CreateChatView(APIView):
     serializer_class = serializers.CreateChatRequestSerializer
+    @idempotent("chats.create")
     @transaction.atomic
     def post(self, request, car_id):
         car = get_object_or_404(models.Car.objects.select_related("seller"), id=car_id, status=models.Car.Status.AVAILABLE)
@@ -593,8 +650,14 @@ class ChatMessagesView(APIView):
     serializer_class = serializers.SendMessageRequestSerializer
     def get(self, request, chat_id):
         chat = participant_or_404(request.user, chat_id)
-        return ok(page(request, chat.messages.select_related("sender"), serializers.MessageSerializer))
+        query = chat.messages.select_related("sender")
+        if cursor_requested(request) and is_feature_enabled(
+            "cursor-pagination", request.user, default=True
+        ):
+            return ok(cursor_page(request, query, serializers.MessageSerializer, "sent_at"))
+        return ok(page(request, query, serializers.MessageSerializer))
 
+    @idempotent("chat-messages.create")
     def post(self, request, chat_id):
         chat = participant_or_404(request.user, chat_id)
         other = chat.seller if request.user.id == chat.buyer_id else chat.buyer
@@ -658,6 +721,7 @@ class ContactCreateView(APIView):
     serializer_class = serializers.ContactMessageSerializer
     throttle_scope = "contact"
 
+    @idempotent("contact-messages.create")
     def post(self, request, car_id):
         car = get_object_or_404(models.Car, id=car_id, status=models.Car.Status.AVAILABLE)
         serializer = serializers.ContactMessageSerializer(data=request.data)
@@ -723,6 +787,7 @@ class CloseAccountView(APIView):
         user.save()
         for token in OutstandingToken.objects.filter(user=user):
             BlacklistedToken.objects.get_or_create(token=token)
+        models.AuthSession.objects.filter(user=user, revoked_at__isnull=True).update(revoked_at=timezone.now())
         write_audit(request, "AccountClosed", "User", user.id, reason)
         response = ok(message="Account closed")
         response.delete_cookie("refreshToken")
@@ -737,6 +802,10 @@ class NotificationsView(APIView):
             query = query.filter(is_read=request.query_params["isRead"] == "true")
         if request.query_params.get("type"):
             query = query.filter(type=request.query_params["type"])
+        if cursor_requested(request) and is_feature_enabled(
+            "cursor-pagination", request.user, default=True
+        ):
+            return ok(cursor_page(request, query, serializers.NotificationSerializer, "created_at"))
         return ok(page(request, query, serializers.NotificationSerializer))
 
 
@@ -922,6 +991,7 @@ class CarUploadView(APIView):
     serializer_class = serializers.ProfileImageRequestSerializer
     throttle_scope = "uploads"
 
+    @idempotent("car-uploads.create")
     def post(self, request):
         file = request.FILES.get("File") or request.FILES.get("file")
         if not file:

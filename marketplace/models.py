@@ -1,4 +1,6 @@
 from django.contrib.auth.models import AbstractUser, BaseUserManager
+from django.contrib.postgres.indexes import GinIndex
+from django.contrib.postgres.search import SearchVector
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.db.models import Q
@@ -13,7 +15,7 @@ class UserManager(BaseUserManager):
             raise ValueError("Email is required.")
         email = self.normalize_email(email)
         user = self.model(email=email, username=email, **extra_fields)
-        user.set_password(password)
+        user.set_password(password)  # type: ignore[attr-defined]
         user.save(using=self._db)
         return user
 
@@ -42,7 +44,7 @@ class User(AbstractUser):
 
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS = ["full_name"]
-    objects = UserManager()
+    objects = UserManager()  # type: ignore[misc, assignment]
 
 
 class NamedModel(models.Model):
@@ -131,6 +133,11 @@ class Car(models.Model):
         indexes = [
             models.Index(fields=["status", "city", "price"]),
             models.Index(fields=["seller", "status", "-listed_date"], name="car_seller_status_idx"),
+            GinIndex(
+                SearchVector("title", "description", "city", config="simple"),
+                name="car_search_vector_idx",
+            ),
+            GinIndex(fields=["title"], opclasses=["gin_trgm_ops"], name="car_title_trgm_idx"),
         ]
 
 
@@ -146,6 +153,13 @@ class CarImage(models.Model):
 
     class Meta:
         ordering = ["display_order", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["car"],
+                condition=Q(is_main=True),
+                name="unique_main_image_per_car",
+            ),
+        ]
 
 
 class CarView(models.Model):
@@ -365,3 +379,61 @@ class RealtimeOutboxEvent(models.Model):
                 name="outbox_dispatch_idx",
             ),
         ]
+
+
+class AuthSession(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, related_name="auth_sessions", on_delete=models.CASCADE)
+    refresh_jti = models.CharField(max_length=64, unique=True)
+    device_name = models.CharField(max_length=160, default="Unknown device")
+    browser = models.CharField(max_length=160, default="Unknown browser")
+    ip_address = models.GenericIPAddressField(blank=True, null=True)
+    user_agent = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_activity_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    expires_at = models.DateTimeField(db_index=True)
+    revoked_at = models.DateTimeField(blank=True, null=True, db_index=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["user", "revoked_at", "-last_activity_at"], name="auth_session_active_idx"),
+        ]
+
+
+class IdempotencyRecord(models.Model):
+    scope = models.CharField(max_length=100)
+    actor_key = models.CharField(max_length=100)
+    key = models.CharField(max_length=128)
+    request_hash = models.CharField(max_length=64)
+    response_status = models.PositiveSmallIntegerField(blank=True, null=True)
+    response_body = models.JSONField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    completed_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["scope", "actor_key", "key"],
+                name="unique_idempotency_key",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["scope", "actor_key", "key"], name="idempotency_lookup_idx"),
+        ]
+
+
+class FeatureFlag(models.Model):
+    key = models.SlugField(max_length=100, unique=True)
+    description = models.CharField(max_length=250, blank=True)
+    is_enabled = models.BooleanField(default=False)
+    rollout_percentage = models.PositiveSmallIntegerField(
+        default=100,
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["key"]
+
+    def __str__(self):
+        return self.key

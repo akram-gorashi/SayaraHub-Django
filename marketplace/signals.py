@@ -1,9 +1,15 @@
-from django.db.models.signals import post_save, pre_save
+from django.db.models.signals import post_delete, post_save, pre_save
 from django.dispatch import receiver
 from django.db import transaction
+from django.core.cache import cache
 from . import models
 from .realtime.publisher import enqueue_event
 from .serializers import MessageSerializer, NotificationSerializer
+
+
+@receiver([post_save, post_delete], sender=models.FeatureFlag)
+def invalidate_feature_flag(sender, instance, **kwargs):
+    cache.delete(f"feature-flag:{instance.key}")
 
 
 @receiver(post_save, sender=models.Message)
